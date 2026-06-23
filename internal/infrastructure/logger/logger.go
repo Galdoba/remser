@@ -35,7 +35,7 @@ func NewServerLogger() (*slog.Logger, error) {
 
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
 		AddSource: false,
-		Level:     slog.LevelDebug,
+		Level:     slog.LevelInfo,
 	}))
 	return logger, nil
 }

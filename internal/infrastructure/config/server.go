@@ -3,8 +3,9 @@ package config
 import "time"
 
 type ServerCFG struct {
-	ListenAddr string
-	TaskDelay  time.Duration
+	ListenAddr     string
+	MaxConnections int64
+	TaskDelay      time.Duration
 }
 
 func Server() (ServerCFG, error) {

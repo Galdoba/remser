@@ -21,7 +21,8 @@ type Task struct {
 	Args        []string
 	ClientID    string
 	Interactive bool
-	MsgChan     chan models.ClientMessage
+	MsgChan0    chan models.ClientMessage
+	MsgChan     chan<- models.ClientMessage
 	Ctx         context.Context
 	Cancel      context.CancelFunc
 	StdInWriter io.WriteCloser
@@ -34,7 +35,7 @@ type TaskRunner interface {
 // clientSession – активное подключение клиента.
 type clientSession struct {
 	id      string
-	msgChan chan models.ClientMessage
+	msgChan chan<- models.ClientMessage
 }
 
 // QueueManager управляет очередью задач и сессиями.
@@ -127,7 +128,7 @@ func (qm *QueueManager) Remove(clientID, taskID string) {
 }
 
 // RegisterSession сохраняет сессию клиента (без вывода в лог).
-func (qm *QueueManager) RegisterSession(clientID string, msgChan chan models.ClientMessage) {
+func (qm *QueueManager) RegisterSession(clientID string, msgChan chan<- models.ClientMessage) {
 	qm.mu.Lock()
 	defer qm.mu.Unlock()
 	qm.sessions[clientID] = &clientSession{

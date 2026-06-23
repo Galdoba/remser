@@ -16,8 +16,9 @@ func Load() (Config, error) {
 			Addres: "",
 		},
 		Server: ServerCFG{
-			ListenAddr: ":8080",
-			TaskDelay:  1,
+			ListenAddr:     ":8080",
+			TaskDelay:      1,
+			MaxConnections: 100,
 		},
 	})
 }

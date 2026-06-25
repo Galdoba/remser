@@ -37,6 +37,7 @@ func newTestTask(ctx context.Context, args []string, interactive bool) (*queue.T
 	msgChan := make(chan models.ClientMessage, 10)
 	task := &queue.Task{
 		ID:          "test-task",
+		SessionID:   "test-session",
 		Args:        args,
 		Interactive: interactive,
 		MsgChan:     msgChan,
@@ -116,7 +117,7 @@ func TestExecuteTaskSimple(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	executor := New(logger)
+	executor := New(logger, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -159,7 +160,7 @@ func TestExecuteTaskStderr(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	executor := New(logger)
+	executor := New(logger, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -188,7 +189,7 @@ func TestExecuteTaskStderr(t *testing.T) {
 // TestExecuteTaskWithError проверяет выполнение несуществующей команды.
 func TestExecuteTaskWithError(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	executor := New(logger)
+	executor := New(logger, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -214,8 +215,6 @@ func TestExecuteTaskWithError(t *testing.T) {
 }
 
 // TestExecuteTaskCancel проверяет отмену контекста во время выполнения.
-// На Windows отмена через контекст может не работать с некоторыми командами,
-// поэтому тест пропускается, если sleep не поддерживает прерывание.
 func TestExecuteTaskCancel(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("skipping on Windows: context cancellation may not work with sleep")
@@ -225,7 +224,7 @@ func TestExecuteTaskCancel(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	executor := New(logger)
+	executor := New(logger, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	task, _ := newTestTask(ctx, []string{"sleep", "2"}, false)
@@ -240,8 +239,8 @@ func TestExecuteTaskCancel(t *testing.T) {
 
 	select {
 	case err := <-errCh:
-		if err == nil {
-			t.Error("expected error due to cancellation, got nil")
+		if err != nil {
+			t.Errorf("expected nil error after cancellation, got: %v", err)
 		}
 	case <-time.After(3 * time.Second):
 		t.Error("timeout waiting for command to finish after cancellation")
@@ -255,7 +254,7 @@ func TestExecuteTaskMultipleLines(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	executor := New(logger)
+	executor := New(logger, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -290,7 +289,7 @@ func TestExecuteTaskMultipleLines(t *testing.T) {
 // TestExecuteTaskNoArgs проверяет обработку задачи без аргументов.
 func TestExecuteTaskNoArgs(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	executor := New(logger)
+	executor := New(logger, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -316,7 +315,6 @@ func TestExecuteTaskNoArgs(t *testing.T) {
 }
 
 // TestExecuteTaskWithDelimiters проверяет разные разделители (CR, LF, CRLF).
-// На Windows вывод команд может преобразовывать \r\n в \n, поэтому тест пропускается.
 func TestExecuteTaskWithDelimiters(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("skipping on Windows: line endings may be normalized")
@@ -326,7 +324,7 @@ func TestExecuteTaskWithDelimiters(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	executor := New(logger)
+	executor := New(logger, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -370,7 +368,7 @@ func TestExecuteTaskWithLargeOutput(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	executor := New(logger)
+	executor := New(logger, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -425,7 +423,7 @@ func TestConcurrentExecutions(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	executor := New(logger)
+	executor := New(logger, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -466,7 +464,7 @@ func TestExecuteTaskInteractive(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	executor := New(logger)
+	executor := New(logger, nil)
 
 	ready := make(chan struct{})
 	ctx := context.WithValue(context.Background(), "ready", ready)
@@ -480,7 +478,6 @@ func TestExecuteTaskInteractive(t *testing.T) {
 		errCh <- executor.executeTask(task)
 	}()
 
-	// Ждём, пока StdInWriter будет установлен (канал будет закрыт)
 	select {
 	case <-ready:
 	case <-time.After(2 * time.Second):
@@ -522,7 +519,7 @@ func TestExecuteTaskWithStdinClose(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	executor := New(logger)
+	executor := New(logger, nil)
 
 	ready := make(chan struct{})
 	ctx := context.WithValue(context.Background(), "ready", ready)

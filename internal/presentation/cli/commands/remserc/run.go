@@ -2,6 +2,7 @@ package remserc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/Galdoba/remser/internal/client"
 	"github.com/Galdoba/remser/internal/infrastructure/config"
 	"github.com/Galdoba/remser/pkg/text"
+	"github.com/google/uuid"
 	"github.com/urfave/cli/v3"
 	"golang.org/x/term"
 )
@@ -36,46 +38,63 @@ func runActionFunc() cli.ActionFunc {
 		args := c.Args().Slice()
 		if len(args) == 0 {
 			fmt.Fprintln(os.Stderr, "Usage: client -address <url> [-interactive] [-client-id <id>] [command args...]")
-			os.Exit(1)
+			return fmt.Errorf("no command specified")
 		}
 
-		cl := &client.Client{
-			ServerAddr:  text.FirstNonEmpty(c.String(flagClientAddres), cfg.Addres),
-			Interactive: (c.Bool(flagClientInteractive) || cfg.Interactive),
-			ClientID:    text.FirstNonEmpty(c.String(flagClientID), cfg.ClientID),
+		addr := text.FirstNonEmpty(c.String(flagClientAddress), cfg.Address)
+		interactive := c.Bool(flagClientInteractive) || cfg.Interactive
+		clientID := text.FirstNonEmpty(c.String(flagClientID), cfg.ClientID)
+
+		// Если ID не задан — генерируем уникальный
+		if clientID == "" {
+			clientID = "remser-" + uuid.New().String()[:8]
 		}
 
-		if cl.Interactive {
-			id := cl.ClientID
-			if id == "" {
-				id = fmt.Sprintf("interactive-%d-%d", os.Getpid(), time.Now().UnixNano())
-			}
-			cl.ClientID = id
+		if interactive && clientID == "" {
+			clientID = fmt.Sprintf("interactive-%d-%d", os.Getpid(), time.Now().UnixNano())
+		}
 
-			oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
+		// Сборка опций клиента
+		opts := []client.Option{
+			client.WithClientID(clientID),
+			client.WithInteractive(interactive),
+		}
+		// При необходимости сюда можно добавить таймауты и другие параметры из конфига
+		// opts = append(opts, client.WithPingInterval(cfg.PingInterval))
+
+		cl, err := client.NewClient(addr, opts...)
+		if err != nil {
+			return fmt.Errorf("create client: %w", err)
+		}
+
+		// Установка raw-режима терминала для интерактивных сессий
+		if interactive {
+			fd := int(os.Stdin.Fd())
+			oldState, err := term.MakeRaw(fd)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "failed to set raw mode: %v\n", err)
-				os.Exit(1)
+				return fmt.Errorf("set raw mode: %w", err)
 			}
-			defer term.Restore(int(os.Stdin.Fd()), oldState)
+			defer term.Restore(fd, oldState)
 		}
 
-		if err := cl.Execute(args); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
+		if err := cl.Execute(ctx, args); err != nil {
+			if errors.Is(err, client.ErrTaskFinished) {
+				return nil // штатное завершение
+			}
+			return err
 		}
 		return nil
 	}
 }
 
 const (
-	flagClientAddres      = "address"
+	flagClientAddress     = "address"
 	flagClientInteractive = "interactive"
 	flagClientID          = "id"
 )
 
 var FlagClientAddr = &cli.StringFlag{
-	Name:    flagClientAddres,
+	Name:    flagClientAddress,
 	Usage:   "set address for client co connect to",
 	Aliases: []string{"a"},
 }

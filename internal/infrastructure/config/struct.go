@@ -13,7 +13,7 @@ type Config struct {
 func Load() (Config, error) {
 	return configmanager.LazyInit(infrastructure.AppName, Config{
 		Client: ClientCFG{
-			Addres: "",
+			Address: "",
 		},
 		Server: ServerCFG{
 			ListenAddr:     ":8080",

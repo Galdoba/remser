@@ -2,7 +2,7 @@ package config
 
 type ClientCFG struct {
 	ClientID    string
-	Addres      string
+	Address     string
 	Interactive bool
 }
 

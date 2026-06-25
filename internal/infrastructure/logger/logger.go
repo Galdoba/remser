@@ -32,11 +32,16 @@ func NewServerLogger() (*slog.Logger, error) {
 		return nil, fmt.Errorf("failed to create writer for logger")
 	}
 	defer f.Close()
-
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+	//development logger
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		AddSource: false,
 		Level:     slog.LevelInfo,
 	}))
+	//production logger
+	// logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+	// 	AddSource: false,
+	// 	Level:     slog.LevelInfo,
+	// }))
 	return logger, nil
 }
 

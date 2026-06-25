@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Galdoba/remser/internal/infrastructure/config"
+	"github.com/Galdoba/remser/internal/infrastructure/logger"
 	"github.com/Galdoba/remser/internal/server"
 	"github.com/urfave/cli/v3"
 )
@@ -30,8 +31,11 @@ func serveActionFunc() cli.ActionFunc {
 		if err != nil {
 			return err
 		}
-
-		srv, err := server.NewServer(ctx, cfg)
+		logger, err := logger.NewServerLogger()
+		if err != nil {
+			return fmt.Errorf("failed to setup server logger: %w", err)
+		}
+		srv, err := server.NewServer(ctx, cfg, logger)
 		if err != nil {
 			return fmt.Errorf("failed to setup server: %w", err)
 		}

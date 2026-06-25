@@ -8,10 +8,10 @@ import (
 
 	"github.com/Galdoba/remser/api/models"
 	"github.com/Galdoba/remser/internal/server/queue"
+	"github.com/google/uuid"
 )
 
 // Handshaker performs the initial protocol negotiation over a WebSocket.
-// It returns a clientID and any extra data needed by the specific handler.
 type Handshaker interface {
 	Handshake(sess *Session, r *http.Request) (clientID string, extra interface{}, err error)
 }
@@ -33,15 +33,15 @@ func (h *InteractiveHandshake) Handshake(sess *Session, r *http.Request) (string
 		h.log.Warn("first message deadline reached", "ip", sess.conn.RemoteAddr().String())
 		return "", nil, err
 	}
-	sess.conn.SetReadDeadline(time.Time{}) // remove deadline
+	sess.conn.SetReadDeadline(time.Time{})
 
 	h.log.Info("received first message", "type", first.Type, "id", first.ClientID,
 		"interactive", first.Interactive, "args", first.Args)
 
 	if first.Type != models.WSCmdExecute {
 		sess.WriteJSON(models.ClientMessage{
-			Type:  "system",
-			Event: "error",
+			Type:  msgTypeSystem,
+			Event: msgEventError,
 			Data:  "first message must be type=execute",
 		})
 		return "", nil, errors.New("invalid first message type")
@@ -52,7 +52,7 @@ func (h *InteractiveHandshake) Handshake(sess *Session, r *http.Request) (string
 		clientID = queue.ExtractClientIP(r)
 		h.log.Warn("no clientID provided, using IP", "ip", clientID)
 	}
+	clientID += "-" + uuid.New().String()[:8]
 
-	// The extra data returned can be the parsed first command.
 	return clientID, &first, nil
 }

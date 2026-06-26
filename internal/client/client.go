@@ -1,7 +1,10 @@
+// Package client provides a configurable WebSocket client for executing commands
+// on a remote server with optional SSH tunneling support.
 package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -10,126 +13,116 @@ import (
 	"time"
 
 	"github.com/Galdoba/remser/api/models"
+	"github.com/Galdoba/remser/internal/infrastructure/config"
 	"github.com/gorilla/websocket"
 )
 
+// Internal sentinel error for normal task completion.
+// Use IsTaskFinished to check for this condition.
+var ErrTaskFinished = errors.New("task finished normally")
+
 const (
-	defaultPongTimeout         = time.Duration(time.Second * 90)
-	defaultactivePingDuration  = time.Duration(time.Second * 3)
-	defaultpassivePingDuration = time.Duration(time.Second * 30)
+	// Default durations for keep‑alive and timeouts.
+	defaultPongTimeout         = 90 * time.Second
+	defaultActivePingDuration  = 3 * time.Second
+	defaultPassivePingDuration = 30 * time.Second
+	defaultWriteTimeout        = 10 * time.Second
+
+	// Buffer size for reading stdin.
+	stdinBufferSize = 1024
+
+	// WebSocket scheme strings.
+	schemeHTTP  = "http"
+	schemeHTTPS = "https"
+	schemeWS    = "ws"
+	schemeWSS   = "wss"
+	defaultPath = "/ws"
+
+	// Default SSH port.
+	defaultSSHPort = "22"
+
+	// Message type constants.
+	msgTypeOutput  = "output"
+	msgTypeSystem  = "system"
+	msgTypeInput   = "input"
+	msgTypeExecute = "execute"
+
+	// System event constants.
+	eventQueuePosition = "queue_position"
+	eventTaskStarted   = "task_started"
+	eventTaskFinished  = "task_finished"
+
+	// Close message text sent when the task finishes.
+	closeNormalText = "task completed"
 )
 
-var (
-	// ErrTaskFinished возвращается, если сервер корректно завершил задачу.
-	ErrTaskFinished = fmt.Errorf("task finished normally")
-)
-
-// Client представляет конфигурируемого WebSocket-клиента для выполнения команд.
+// Client is a configurable WebSocket client that connects to a remote server,
+// sends a command for execution, and optionally provides interactive stdin.
+//
+// All heavy dependencies (logger, dialer, I/O streams) are injected via
+// functional options. The client supports SSH tunneling when configured
+// with WithSSHTunnel.
 type Client struct {
-	// URL полный адрес WebSocket-сервера (схема ws/wss). Может быть передан http/https – схема будет исправлена.
+	// URL is the full WebSocket server address (ws/wss scheme).
+	// It may be supplied as http/https and will be converted automatically.
 	URL string
-	// ClientID идентификатор клиента, отправляемый серверу.
+
+	// ClientID is an identifier sent to the server with every execution request.
 	ClientID string
-	// Interactive включает режим интерактивного ввода (stdin пересылается на сервер).
+
+	// Interactive enables forwarding of stdin to the remote command.
 	Interactive bool
 
-	// Stdin источник данных для интерактивного ввода (по умолчанию os.Stdin).
+	// Stdin is the source for interactive input (defaults to os.Stdin).
 	Stdin io.Reader
-	// Stdout приёмник для вывода команды.
+
+	// Stdout receives the command's output.
 	Stdout io.Writer
-	// Stderr приёмник для системных сообщений и ошибок.
+
+	// Stderr receives system messages, errors, and diagnostics.
 	Stderr io.Writer
 
-	// Dialer кастомный WebSocket dialer (таймауты, заголовки).
+	// Dialer is a custom WebSocket dialer (timeouts, headers).
 	Dialer *websocket.Dialer
-	// Logger структурированный логгер.
+
+	// Logger is the structured logger used by the client.
 	Logger *slog.Logger
 
-	// OnMessage опциональный обработчик всех входящих сообщений.
-	// Если nil, используется defaultHandler.
+	// OnMessage is an optional callback that receives every incoming message.
+	// When nil, a built‑in default handler is used.
 	OnMessage func(msg models.ClientMessage)
 
-	// Внутренние настройки
+	// Internal settings for keep‑alive and timeouts.
 	pingInterval time.Duration
 	pongTimeout  time.Duration
 	writeTimeout time.Duration
 
-	pingIntervalCh chan time.Duration
+	// SSH tunnel configuration (populated by WithSSHTunnel).
+	useSSH bool
+	sshCfg config.SSH
 }
 
-// Option позволяет гибко настраивать Client.
-type Option func(*Client)
-
-// WithStdin задаёт io.Reader для интерактивного ввода.
-func WithStdin(r io.Reader) Option {
-	return func(c *Client) { c.Stdin = r }
-}
-
-// WithStdout переопределяет поток stdout.
-func WithStdout(w io.Writer) Option {
-	return func(c *Client) { c.Stdout = w }
-}
-
-// WithStderr переопределяет поток stderr.
-func WithStderr(w io.Writer) Option {
-	return func(c *Client) { c.Stderr = w }
-}
-
-// WithLogger устанавливает slog.Logger.
-func WithLogger(l *slog.Logger) Option {
-	return func(c *Client) { c.Logger = l }
-}
-
-// WithDialer позволяет использовать кастомный websocket.Dialer.
-func WithDialer(d *websocket.Dialer) Option {
-	return func(c *Client) { c.Dialer = d }
-}
-
-// WithClientID задаёт идентификатор клиента.
-func WithClientID(id string) Option {
-	return func(c *Client) { c.ClientID = id }
-}
-
-// WithInteractive включает интерактивный режим.
-func WithInteractive(interactive bool) Option {
-	return func(c *Client) { c.Interactive = interactive }
-}
-
-// WithPingInterval задаёт интервал отправки клиентских ping-фреймов.
-// Если 0, клиент не шлёт ping самостоятельно, но отвечает на серверные pong.
-func WithPingInterval(d time.Duration) Option {
-	return func(c *Client) { c.pingInterval = d }
-}
-
-// WithWriteTimeout задаёт таймаут на запись сообщения.
-func WithWriteTimeout(d time.Duration) Option {
-	return func(c *Client) { c.writeTimeout = d }
-}
-
-// WithPongTimeout задаёт максимальное время ожидания pong-ответа от сервера.
-func WithPongTimeout(d time.Duration) Option {
-	return func(c *Client) { c.pongTimeout = d }
-}
-
-// NewClient создаёт клиент с обязательным URL сервера и опциями.
-// URL может быть в формате http(s)://host:port/path или ws(s)://host:port/path.
-// Если путь пуст, добавляется стандартный "/ws".
+// NewClient creates a new Client with the given server URL and options.
+// The URL may use http/https or ws/wss scheme; the former is converted
+// automatically. If the path is empty, "/ws" is appended.
 func NewClient(serverURL string, opts ...Option) (*Client, error) {
 	u, err := url.Parse(serverURL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid url: %w", err)
 	}
+	// Normalise the scheme to WebSocket.
 	switch u.Scheme {
-	case "http":
-		u.Scheme = "ws"
-	case "https":
-		u.Scheme = "wss"
-	case "ws", "wss":
+	case schemeHTTP:
+		u.Scheme = schemeWS
+	case schemeHTTPS:
+		u.Scheme = schemeWSS
+	case schemeWS, schemeWSS:
+		// valid
 	default:
 		return nil, fmt.Errorf("unsupported url scheme: %s", u.Scheme)
 	}
 	if u.Path == "" || u.Path == "/" {
-		u.Path = "/ws"
+		u.Path = defaultPath
 	}
 
 	c := &Client{
@@ -139,9 +132,9 @@ func NewClient(serverURL string, opts ...Option) (*Client, error) {
 		Stderr:       os.Stderr,
 		Dialer:       websocket.DefaultDialer,
 		Logger:       slog.New(slog.NewTextHandler(os.Stderr, nil)),
-		pingInterval: defaultpassivePingDuration,
+		pingInterval: defaultPassivePingDuration,
 		pongTimeout:  defaultPongTimeout,
-		writeTimeout: 10 * time.Second,
+		writeTimeout: defaultWriteTimeout,
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -149,45 +142,32 @@ func NewClient(serverURL string, opts ...Option) (*Client, error) {
 	return c, nil
 }
 
+// ---------- High‑level execution ----------
+
+// Execute connects to the server, sends the command described by args,
+// and processes messages until the task finishes or the context is cancelled.
 func (c *Client) Execute(ctx context.Context, args []string) error {
-	conn, _, err := c.Dialer.DialContext(ctx, c.URL, nil)
+	dialer, sshClient, err := c.setupSSHTunnelIfNeeded()
+	if err != nil {
+		return fmt.Errorf("ssh tunnel: %w", err)
+	}
+	if sshClient != nil {
+		defer sshClient.Close()
+	}
+
+	conn, _, err := dialer.DialContext(ctx, c.URL, nil)
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
 	}
 	defer conn.Close()
 
-	c.pingIntervalCh = make(chan time.Duration, 1)
+	pingCh := make(chan time.Duration, 1)
+	c.configureConnectionHandlers(conn, pingCh)
 
-	// Обработчик входящих ping от сервера (если будут)
-	conn.SetPingHandler(func(appData string) error {
-		c.Logger.Debug("server ping received")
-		deadline := time.Now().Add(c.pongTimeout)
-		conn.SetReadDeadline(deadline)
-		return nil // pong отправится автоматически
-	})
+	go c.pingLoop(ctx, conn, pingCh)
 
-	// Обработчик pong на наши ping – продлевает deadline
-	conn.SetPongHandler(func(appData string) error {
-		c.Logger.Debug("pong received")
-		deadline := time.Now().Add(c.pongTimeout)
-		conn.SetReadDeadline(deadline)
-		return nil
-	})
-
-	// Начальный deadline
-	conn.SetReadDeadline(time.Now().Add(c.pongTimeout))
-
-	// Запускаем keep-alive (клиентские ping)
-	go c.pingLoop(ctx, conn)
-
-	req := models.WSCommand{
-		Type:        "execute",
-		Args:        args,
-		ClientID:    c.ClientID,
-		Interactive: c.Interactive,
-	}
-	if err := c.writeJSON(conn, req); err != nil {
-		return fmt.Errorf("send execute: %w", err)
+	if err := c.sendExecuteRequest(conn, args); err != nil {
+		return err
 	}
 
 	if c.Interactive {
@@ -196,6 +176,47 @@ func (c *Client) Execute(ctx context.Context, args []string) error {
 		go c.readStdinLoop(stdinCtx, conn, cancelStdin)
 	}
 
+	return c.readMessageLoop(ctx, conn, pingCh)
+}
+
+// ---------- WebSocket helpers ----------
+
+// configureConnectionHandlers sets the ping/pong handlers and initial read deadline
+// on the WebSocket connection. The pingCh channel is used to dynamically update
+// the client‑side ping interval.
+func (c *Client) configureConnectionHandlers(conn *websocket.Conn, pingCh chan<- time.Duration) {
+	conn.SetPingHandler(func(appData string) error {
+		c.Logger.Debug("server ping received")
+		deadline := time.Now().Add(c.pongTimeout)
+		conn.SetReadDeadline(deadline)
+		return nil // pong is sent automatically
+	})
+
+	conn.SetPongHandler(func(appData string) error {
+		c.Logger.Debug("pong received")
+		deadline := time.Now().Add(c.pongTimeout)
+		conn.SetReadDeadline(deadline)
+		return nil
+	})
+
+	conn.SetReadDeadline(time.Now().Add(c.pongTimeout))
+}
+
+// sendExecuteRequest builds and sends the initial "execute" command over the WebSocket.
+func (c *Client) sendExecuteRequest(conn *websocket.Conn, args []string) error {
+	req := models.WSCommand{
+		Type:        msgTypeExecute,
+		Args:        args,
+		ClientID:    c.ClientID,
+		Interactive: c.Interactive,
+	}
+	return c.writeJSON(conn, req)
+}
+
+// readMessageLoop reads incoming JSON messages and dispatches them until the
+// context is cancelled or the task finishes. It also updates the ping interval
+// based on system events.
+func (c *Client) readMessageLoop(ctx context.Context, conn *websocket.Conn, pingCh chan<- time.Duration) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -212,11 +233,12 @@ func (c *Client) Execute(ctx context.Context, args []string) error {
 			return nil
 		}
 
-		c.updatePingInterval(msg)
+		// Adjust the ping frequency when the server signals state changes.
+		c.updatePingInterval(msg, pingCh)
 
-		if msg.Type == "system" && msg.Event == "task_finished" {
-			closeMsg := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "task completed")
-			_ = c.writeControl(conn, websocket.CloseMessage, closeMsg, time.Now().Add(c.writeTimeout))
+		if msg.Type == msgTypeSystem && msg.Event == eventTaskFinished {
+			closeMsg := websocket.FormatCloseMessage(websocket.CloseNormalClosure, closeNormalText)
+			_ = c.writeControl(conn, websocket.CloseMessage, closeMsg)
 			return ErrTaskFinished
 		}
 
@@ -228,80 +250,91 @@ func (c *Client) Execute(ctx context.Context, args []string) error {
 	}
 }
 
-func (c *Client) updatePingInterval(msg models.ClientMessage) {
-	if msg.Type != "system" {
+// ---------- Keep‑alive ----------
+
+// updatePingInterval adjusts the client ping interval based on the server
+// message (queue_position → passive, task_started → active, task_finished → 0).
+func (c *Client) updatePingInterval(msg models.ClientMessage, pingCh chan<- time.Duration) {
+	if msg.Type != msgTypeSystem {
 		return
 	}
 	switch msg.Event {
-	case "queue_position":
-		c.setPingInterval(defaultpassivePingDuration)
-	case "task_started":
-		c.setPingInterval(defaultactivePingDuration)
-	case "task_finished":
-		c.setPingInterval(0)
+	case eventQueuePosition:
+		nonBlockingSend(pingCh, defaultPassivePingDuration)
+	case eventTaskStarted:
+		nonBlockingSend(pingCh, defaultActivePingDuration)
+	case eventTaskFinished:
+		nonBlockingSend(pingCh, 0)
 	}
 }
 
-func (c *Client) setPingInterval(d time.Duration) {
+// nonBlockingSend attempts to send a value on ch without blocking.
+func nonBlockingSend(ch chan<- time.Duration, v time.Duration) {
 	select {
-	case c.pingIntervalCh <- d:
+	case ch <- v:
 	default:
 	}
 }
 
-// pingLoop отправляет ping каждые pingInterval
-func (c *Client) pingLoop(ctx context.Context, conn *websocket.Conn) {
+// pingLoop runs the client‑side ping mechanism. It reads the desired interval
+// from pingCh and creates/tears down a ticker accordingly.
+func (c *Client) pingLoop(ctx context.Context, conn *websocket.Conn, pingCh <-chan time.Duration) {
 	var ticker *time.Ticker
 	var tickerCh <-chan time.Time
 
-	if c.pingInterval > 0 {
-		ticker = time.NewTicker(c.pingInterval)
-		tickerCh = ticker.C
-		defer ticker.Stop()
-	}
+	defer func() {
+		if ticker != nil {
+			ticker.Stop()
+		}
+	}()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case newInterval := <-c.pingIntervalCh:
-			//kill okd ticker
+		case newInterval := <-pingCh:
+			// Replace the current ticker.
 			if ticker != nil {
 				ticker.Stop()
 				ticker = nil
 				tickerCh = nil
 			}
-			//start new
-			if newInterval > 0 { //stop pings if newInterval is 0
+			if newInterval > 0 {
 				ticker = time.NewTicker(newInterval)
 				tickerCh = ticker.C
 			}
 		case <-tickerCh:
-			if err := c.writeControl(conn, websocket.PingMessage, nil, time.Now().Add(c.writeTimeout)); err != nil {
+			if err := c.writeControl(conn, websocket.PingMessage, nil); err != nil {
 				c.Logger.Error("ping failed", "error", err)
 				return
 			}
 		}
 	}
-
 }
 
-// writeJSON выполняет запись JSON с таймаутом.
+// ---------- Low‑level I/O ----------
+
+// writeJSON marshals v as JSON and writes it to the WebSocket connection
+// with the configured write timeout.
 func (c *Client) writeJSON(conn *websocket.Conn, v any) error {
 	conn.SetWriteDeadline(time.Now().Add(c.writeTimeout))
 	return conn.WriteJSON(v)
 }
 
-// writeControl отправляет контрольное сообщение.
-func (c *Client) writeControl(conn *websocket.Conn, messageType int, data []byte, deadline time.Time) error {
-	conn.SetWriteDeadline(deadline)
+// writeControl sends a WebSocket control message (ping, pong, close) with
+// the configured write timeout.
+func (c *Client) writeControl(conn *websocket.Conn, messageType int, data []byte) error {
+	conn.SetWriteDeadline(time.Now().Add(c.writeTimeout))
 	return conn.WriteMessage(messageType, data)
 }
 
-// readStdinLoop читает данные из Stdin и отправляет их как WSCommand input.
-// При фатальной ошибке вызывает cancel, чтобы прервать Execute.
+// ---------- Stdin forwarding ----------
+
+// readStdinLoop reads from the configured Stdin and sends each chunk as an
+// "input" message. If a fatal error occurs, it cancels the parent context to
+// terminate the main execution loop.
 func (c *Client) readStdinLoop(ctx context.Context, conn *websocket.Conn, cancel context.CancelFunc) {
-	buf := make([]byte, 1024)
+	buf := make([]byte, stdinBufferSize)
 	for {
 		select {
 		case <-ctx.Done():
@@ -311,7 +344,7 @@ func (c *Client) readStdinLoop(ctx context.Context, conn *websocket.Conn, cancel
 		n, err := c.Stdin.Read(buf)
 		if n > 0 {
 			input := models.WSCommand{
-				Type:  models.WSCmdInput,
+				Type:  msgTypeInput,
 				Input: string(buf[:n]),
 			}
 			if err := c.writeJSON(conn, input); err != nil {
@@ -330,23 +363,27 @@ func (c *Client) readStdinLoop(ctx context.Context, conn *websocket.Conn, cancel
 	}
 }
 
-// defaultHandler встроенная обработка сообщений, когда OnMessage == nil.
+// ---------- Default message handler ----------
+
+// defaultHandler implements built‑in output and system message handling when
+// no OnMessage callback is provided.
 func (c *Client) defaultHandler(msg models.ClientMessage) {
 	switch msg.Type {
-	case "output":
+	case msgTypeOutput:
 		fmt.Fprint(c.Stdout, msg.Data)
 		if msg.Delim != "" {
 			fmt.Fprint(c.Stdout, msg.Delim)
 		} else {
+			// Ensure output ends with a newline unless the delimiter already provides one.
 			if len(msg.Data) > 0 && msg.Data[len(msg.Data)-1] != '\n' {
 				fmt.Fprintln(c.Stdout)
 			}
 		}
-	case "system":
+	case msgTypeSystem:
 		switch msg.Event {
-		case "queue_position":
+		case eventQueuePosition:
 			fmt.Fprintf(c.Stderr, "[queue] position: %d\r", msg.Pos)
-		case "task_started":
+		case eventTaskStarted:
 			fmt.Fprintln(c.Stderr, "[queue] a task started executing")
 		default:
 			fmt.Fprintf(c.Stderr, "[system] event: %s\n", msg.Event)

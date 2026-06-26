@@ -23,6 +23,16 @@ var Run = &cli.Command{
 		FlagClientAddr,
 		FlagClientInteractive,
 		FlagClientID,
+		FlagClientAddr,
+		FlagClientInteractive,
+		FlagClientID,
+		FlagSSHHost,
+		FlagSSHPort,
+		FlagSSHUser,
+		FlagSSHPassword,
+		FlagSSHKeyFile,
+		FlagSSHInsecure,
+		FlagSSHRemoteAddr,
 	},
 	Action:    runActionFunc(),
 	Copyright: "",
@@ -53,6 +63,15 @@ func runActionFunc() cli.ActionFunc {
 		if interactive && clientID == "" {
 			clientID = fmt.Sprintf("interactive-%d-%d", os.Getpid(), time.Now().UnixNano())
 		}
+		sshCfg := config.SSH{
+			User:                  text.FirstNonEmpty(c.String("ssh-user"), cfg.Ssh.User),
+			Host:                  text.FirstNonEmpty(c.String("ssh-host"), cfg.Ssh.Host),
+			Port:                  text.FirstNonEmpty(c.String("ssh-port"), cfg.Ssh.Port),
+			Password:              text.FirstNonEmpty(c.String("ssh-password"), cfg.Ssh.Password),
+			KeyFile:               text.FirstNonEmpty(c.String("ssh-key"), cfg.Ssh.KeyFile),
+			InsecureIgnoreHostKey: c.Bool("ssh-insecure") || cfg.Ssh.InsecureIgnoreHostKey,
+			RemoteAddress:         text.FirstNonEmpty(c.String("ssh-remote"), cfg.Ssh.RemoteAddress),
+		}
 
 		// Сборка опций клиента
 		opts := []client.Option{
@@ -61,6 +80,11 @@ func runActionFunc() cli.ActionFunc {
 		}
 		// При необходимости сюда можно добавить таймауты и другие параметры из конфига
 		// opts = append(opts, client.WithPingInterval(cfg.PingInterval))
+
+		// Если SSH хост задан, активируем туннель
+		if sshCfg.Host != "" {
+			opts = append(opts, client.WithSSHTunnel(sshCfg))
+		}
 
 		cl, err := client.NewClient(addr, opts...)
 		if err != nil {
@@ -108,4 +132,43 @@ var FlagClientInteractive = &cli.BoolFlag{
 var FlagClientID = &cli.StringFlag{
 	Name:  flagClientID,
 	Usage: "set client id",
+}
+
+var FlagSSHHost = &cli.StringFlag{
+	Name:    "ssh-host",
+	Usage:   "SSH server host",
+	Aliases: []string{"H"},
+}
+
+var FlagSSHPort = &cli.StringFlag{
+	Name:    "ssh-port",
+	Usage:   "SSH server port (default 22)",
+	Aliases: []string{"P"},
+}
+
+var FlagSSHUser = &cli.StringFlag{
+	Name:    "ssh-user",
+	Usage:   "SSH username",
+	Aliases: []string{"u"},
+}
+
+var FlagSSHPassword = &cli.StringFlag{
+	Name:  "ssh-password",
+	Usage: "SSH password",
+}
+
+var FlagSSHKeyFile = &cli.StringFlag{
+	Name:    "ssh-key",
+	Usage:   "path to SSH private key file",
+	Aliases: []string{"k"},
+}
+
+var FlagSSHInsecure = &cli.BoolFlag{
+	Name:  "ssh-insecure",
+	Usage: "skip host key verification (insecure)",
+}
+
+var FlagSSHRemoteAddr = &cli.StringFlag{
+	Name:  "ssh-remote",
+	Usage: "WebSocket server address from SSH's perspective (host:port)",
 }

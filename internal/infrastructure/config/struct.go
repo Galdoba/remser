@@ -14,6 +14,15 @@ func Load() (Config, error) {
 	return configmanager.LazyInit(infrastructure.AppName, Config{
 		Client: ClientCFG{
 			Address: "",
+			Ssh: SSH{
+				User:                  "",
+				Host:                  "",
+				Port:                  "",
+				Password:              "",
+				KeyFile:               "",
+				InsecureIgnoreHostKey: false,
+				RemoteAddress:         "",
+			},
 		},
 		Server: ServerCFG{
 			ListenAddr:     ":8080",
